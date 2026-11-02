@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Gateway.Api/Gateway.Api.csproj" />
+  <Project Path="Gateway.ServiceDefaults/Gateway.ServiceDefaults.csproj" />
+</Solution>
