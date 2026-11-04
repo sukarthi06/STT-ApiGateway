@@ -13,6 +13,7 @@ public static class AuthExtensions
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
             {
+                options.RequireHttpsMetadata = jwt.GetValue("RequireHttpsMetadata", true);
                 options.MetadataAddress = jwt["MetadataAddress"]!;
                 options.MapInboundClaims = false;   // keep "sub"/"role" as-is
                 options.TokenValidationParameters = new TokenValidationParameters
