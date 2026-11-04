@@ -1,0 +1,154 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: api-gateway-deploy
+  cancel-in-progress: false
+
+env:
+  APP_NAME: stt-api-gateway-dev
+  IMAGE_NAME: api-gateway-comp
+  DOCKERFILE: Gateway.Api/Dockerfile
+
+jobs:
+  deploy:
+    name: Deploy API Gateway to Azure Container App
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Log source checkout status
+        run: |
+          echo "::notice title=Checkout completed::Deploying commit $(git rev-parse --short HEAD)."
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log Azure login status
+        run: |
+          subscription="$(az account show --query name --output tsv)"
+          echo "::notice title=Azure login completed::Authenticated to subscription: $subscription."
+
+      - name: Build and push image to ACR
+        run: |
+          az acr login --name ${{ vars.ACR_NAME }} --resource-group ${{ vars.RG_NAME }}
+          docker buildx build -f $DOCKERFILE \
+            -t ${{ vars.ACR_LOGIN_SERVER }}/$IMAGE_NAME:${{ github.event.workflow_run.head_sha }} \
+            --push .
+          echo "::notice title=Container image published::Image pushed to ACR for commit ${{ github.event.workflow_run.head_sha }}."
+
+      - name: Wait for any active Container App operation
+        run: |
+          for attempt in {1..60}; do
+            state="$(az containerapp show --name $APP_NAME --resource-group ${{ vars.RG_NAME }} --query properties.provisioningState --output tsv)"
+            case "$state" in
+              Succeeded) echo "::notice title=Container App ready::No active Container App operation."; exit 0 ;;
+              Failed) echo "::warning title=Previous operation failed::Continuing with this corrective deployment."; exit 0 ;;
+              *) echo "Container App provisioning state: $state. Waiting..."; sleep 10 ;;
+            esac
+          done
+          echo "Timed out waiting for the Container App to become ready."
+          exit 1
+
+      - name: Set OTLP headers as Container App secret
+        env:
+          OTLP_HEADERS: ${{ secrets.GRAFANA_OTLP_AUTH_HEADER }}
+        run: |
+          az containerapp secret set \
+            --name $APP_NAME \
+            --resource-group ${{ vars.RG_NAME }} \
+            --secrets "otlp-headers=$OTLP_HEADERS"
+          echo "::notice title=Secret update completed::OTLP headers secret was updated."
+
+      - name: Wait for OTLP headers secret update
+        run: |
+          sleep 15
+          state="$(az containerapp show --name $APP_NAME --resource-group ${{ vars.RG_NAME }} --query properties.provisioningState --output tsv)"
+          echo "::notice title=Secret update check::Container App provisioning state: $state."
+
+      - name: Deploy to Container App
+        env:
+          OTLP_ENDPOINT: ${{ vars.OTLP_ENDPOINT }}
+          OTLP_PROTOCOL: ${{ vars.OTLP_PROTOCOL }}
+          AUTH_SERVICE_URL: ${{ vars.AUTH_SERVICE_URL }}
+          CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
+        run: |
+          az containerapp update \
+            --name $APP_NAME \
+            --resource-group ${{ vars.RG_NAME }} \
+            --image ${{ vars.ACR_LOGIN_SERVER }}/$IMAGE_NAME:${{ github.event.workflow_run.head_sha }} \
+            --set-env-vars \
+              "ASPNETCORE_ENVIRONMENT=UAT" \
+              "DOTNET_ENVIRONMENT=UAT" \
+              "Jwt__Issuer=$AUTH_SERVICE_URL" \
+              "Jwt__MetadataAddress=$AUTH_SERVICE_URL/.well-known/openid-configuration" \
+              "ReverseProxy__Clusters__auth-cluster__Destinations__auth__Address=$AUTH_SERVICE_URL" \
+              "Cors__AllowedOrigins=$CORS_ALLOWED_ORIGINS" \
+              "OTEL_EXPORTER_OTLP_ENDPOINT=$OTLP_ENDPOINT" \
+              "OTEL_EXPORTER_OTLP_PROTOCOL=$OTLP_PROTOCOL" \
+              "OTEL_EXPORTER_OTLP_HEADERS=secretref:otlp-headers" \
+              "OTEL_SERVICE_NAME=Gateway.Api"
+          echo "::notice title=Container App deployment completed::Azure accepted and completed the image update."
+
+      - name: Verify deployed revision
+        run: |
+          set -euo pipefail
+
+          app="$APP_NAME"
+          rg="${{ vars.RG_NAME }}"
+          expected_image="${{ vars.ACR_LOGIN_SERVER }}/$IMAGE_NAME:${{ github.event.workflow_run.head_sha }}"
+
+          for attempt in {1..60}; do
+            app_state="$(az containerapp show \
+              --name "$app" \
+              --resource-group "$rg" \
+              --query properties.provisioningState \
+              --output tsv)"
+
+            revision="$(az containerapp show \
+              --name "$app" \
+              --resource-group "$rg" \
+              --query properties.latestReadyRevisionName \
+              --output tsv)"
+
+            if [[ "$app_state" == "Succeeded" && -n "$revision" ]]; then
+              details="$(az containerapp revision show \
+                --name "$app" \
+                --resource-group "$rg" \
+                --revision "$revision" \
+                --query '{active:properties.active,health:properties.healthState,provisioning:properties.provisioningState,image:properties.template.containers[0].image}' \
+                --output json)"
+
+              echo "$details"
+
+              actual_image="$(echo "$details" | jq -r .image)"
+              health="$(echo "$details" | jq -r .health)"
+              provisioning="$(echo "$details" | jq -r .provisioning)"
+
+              if [[ "$actual_image" == "$expected_image" && "$health" == "Healthy" && "$provisioning" == "Provisioned" ]]; then
+                echo "::notice title=Deployment verified::Revision $revision is active, healthy, provisioned, and running the expected image."
+                exit 0
+              fi
+            fi
+
+            sleep 10
+          done
+
+          echo "Deployment verification timed out."
+          exit 1
