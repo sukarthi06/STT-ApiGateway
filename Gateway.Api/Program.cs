@@ -20,6 +20,8 @@ if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Local"))
     app.MapScalarApiReference(options =>
     {
         options.AddDocument("auth", "Auth Service", "/docs/auth/openapi/v1.json");
+        options.AddDocument("recordings", "Recording Service", "/docs/recordings/openapi/v1.json");
+
         options.Servers = [new ScalarServer("/")];   // Try-it goes via the gateway
     }).AllowAnonymous();
 }
