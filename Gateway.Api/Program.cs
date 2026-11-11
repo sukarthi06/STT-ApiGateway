@@ -1,10 +1,18 @@
 using Gateway.Api.Extensions;
 using Scalar.AspNetCore;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddGatewayKeyVault();
 builder.AddServiceDefaults();
+
+builder.Host.AddHostInfrastructure(builder.Configuration);
+if (!builder.Environment.IsEnvironment("Local"))
+{
+    builder.Services.AddObservability(builder.Configuration);
+}
+
 builder.Services.AddGatewayAuth(builder.Configuration); 
 builder.Services.AddGatewayProxy(builder.Configuration);
 builder.Services.AddGatewayCors(builder.Configuration);
@@ -14,6 +22,8 @@ var app = builder.Build();
 app.UseCors(CorsExtensions.PolicyName);
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseSerilogRequestLogging();
 
 if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Local"))
 {
@@ -26,11 +36,7 @@ if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Local"))
     }).AllowAnonymous();
 }
 
-app.MapGet("/health", (ILogger<Program> logger) =>
-{
-    logger.LogInformation("Health check hit");
-    return Results.Ok();
-}).AllowAnonymous();
+app.MapGet("/health", () => Results.Ok()).AllowAnonymous();
 
 app.MapReverseProxy();
 

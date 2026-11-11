@@ -87,23 +87,27 @@ jobs:
           OTLP_ENDPOINT: ${{ vars.OTLP_ENDPOINT }}
           OTLP_PROTOCOL: ${{ vars.OTLP_PROTOCOL }}
           AUTH_SERVICE_URL: ${{ vars.AUTH_SERVICE_URL }}
+          RECORDING_SERVICE_URL: ${{ vars.RECORDING_SERVICE_URL }}
           CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
         run: |
+          # --replace-env-vars makes this list the complete set, so old OTEL_EXPORTER_OTLP_* vars are removed
           az containerapp update \
             --name $APP_NAME \
             --resource-group ${{ vars.RG_NAME }} \
             --image ${{ vars.ACR_LOGIN_SERVER }}/$IMAGE_NAME:${{ github.event.workflow_run.head_sha }} \
-            --set-env-vars \
+            --replace-env-vars \
               "ASPNETCORE_ENVIRONMENT=UAT" \
               "DOTNET_ENVIRONMENT=UAT" \
               "Jwt__Issuer=$AUTH_SERVICE_URL" \
               "Jwt__MetadataAddress=$AUTH_SERVICE_URL/.well-known/openid-configuration" \
               "ReverseProxy__Clusters__auth-cluster__Destinations__auth__Address=$AUTH_SERVICE_URL" \
+              "ReverseProxy__Clusters__recording-cluster__Destinations__recording__Address=$RECORDING_SERVICE_URL" \
               "Cors__AllowedOrigins=$CORS_ALLOWED_ORIGINS" \
-              "OTEL_EXPORTER_OTLP_ENDPOINT=$OTLP_ENDPOINT" \
-              "OTEL_EXPORTER_OTLP_PROTOCOL=$OTLP_PROTOCOL" \
-              "OTEL_EXPORTER_OTLP_HEADERS=secretref:otlp-headers" \
-              "OTEL_SERVICE_NAME=Gateway.Api"
+              "Otlp__Endpoint=$OTLP_ENDPOINT" \
+              "Otlp__Protocol=$OTLP_PROTOCOL" \
+              "Otlp__TracesEndpoint=${OTLP_ENDPOINT%/}/v1/traces" \
+              "Otlp__MetricsEndpoint=${OTLP_ENDPOINT%/}/v1/metrics" \
+              "Otlp__Headers=secretref:otlp-headers"
           echo "::notice title=Container App deployment completed::Azure accepted and completed the image update."
 
       - name: Verify deployed revision
