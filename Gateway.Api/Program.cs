@@ -26,7 +26,12 @@ if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Local"))
     }).AllowAnonymous();
 }
 
-app.MapGet("/health", () => Results.Ok()).AllowAnonymous();
+app.MapGet("/health", (ILogger<Program> logger) =>
+{
+    logger.LogInformation("Health check hit");
+    return Results.Ok();
+}).AllowAnonymous();
+
 app.MapReverseProxy();
 
 app.Run();
